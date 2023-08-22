@@ -23,5 +23,5 @@ class VariationalNormal:
     def rsample(self, n=torch.Size([])):
         return self.dist().rsample(n)
 
-    def log_prob(self, x):
+    def log_q(self, x):
         return self.dist().log_prob(x).sum()
