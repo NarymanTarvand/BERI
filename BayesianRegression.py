@@ -13,7 +13,7 @@ torch.set_default_dtype(torch.float64)
 
 
 class BayesianLinearRegression:
-    def __init__(self, x_data, y_data) -> None:
+    def __init__(self, x_data, y_data, theta_samples) -> None:
         self.x_data = x_data
         self.y_data = y_data
         self.n = self.x_data.size(0)
@@ -22,6 +22,7 @@ class BayesianLinearRegression:
             "beta": VariationalNormal(size=2),
             "sig": VariationalNormal(size=1),
         }
+        self.theta_samples = torch.Size([theta_samples])
 
     def log_prior(self, variational_samples):
         log_prior_beta = Normal(0, 1).log_prob(variational_samples["beta"]).sum()
@@ -48,19 +49,94 @@ class BayesianLinearRegression:
 
     def elbo(self):
         variational_samples = {}
-        for key in self.variational_distributions:
-            variational_samples[key] = self.variational_distributions[key].rsample()
+        # for key in self.variational_distributions:
+        #     variational_samples[key] = self.variational_distributions[key].rsample(self.theta_samples)
 
-        variational_samples = {
-            "beta": variational_samples["beta"],
-            "sig": variational_samples["sig"].exp(),
-        }
+        beta_samples = self.variational_distributions["beta"].rsample(
+            self.theta_samples
+        )
+        sig_samples = (
+            self.variational_distributions["sig"].rsample(self.theta_samples).exp()
+        )
+        elbo = []
 
-        out = self.loglike(variational_samples)
-        out += self.log_prior(variational_samples)
-        out -= self.log_q(variational_samples)
+        for beta_sample, sig_sample in zip(beta_samples, sig_samples):
+            variational_samples = {
+                "beta": beta_sample,
+                "sig": sig_sample,
+            }
 
-        return out
+            temp_elbo = self.loglike(variational_samples)
+            temp_elbo += self.log_prior(variational_samples)
+            temp_elbo -= self.log_q(variational_samples)
+
+            import pdb
+
+            pdb.set_trace()
+
+            temp_elbo = temp_elbo / self.n
+
+            elbo.append(temp_elbo)
+
+        return torch.stack(elbo).mean(0)
+
+    def elbo_variance(self):
+        beta_samples = self.variational_distributions["beta"].rsample(
+            self.theta_samples
+        )
+        sig_samples = (
+            self.variational_distributions["sig"].rsample(self.theta_samples).exp()
+        )
+        elbo = []
+        max_likelihood = []
+        var = []
+
+        for beta_sample, sig_sample in zip(beta_samples, sig_samples):
+            variational_samples = {
+                "beta": beta_sample,
+                "sig": sig_sample,
+            }
+
+            temp_elbo = self.loglike(variational_samples)
+            temp_elbo += self.log_prior(variational_samples)
+            temp_elbo -= self.log_q(variational_samples)
+
+            temp_elbo = temp_elbo / self.n
+            var.append(
+                (
+                    (
+                        torch.exp(
+                            Normal(
+                                self.x_data.matmul(beta_sample), sig_sample
+                            ).log_prob(self.y_data)
+                        )
+                        - self.y_data
+                    )
+                    ** 2
+                ).mean(0)
+            )
+            print(
+                torch.exp(
+                    Normal(self.x_data.matmul(beta_sample), sig_sample).log_prob(
+                        self.y_data
+                    )
+                ).mean(0)
+            )
+            max_likelihood.append(
+                torch.exp(
+                    Normal(self.x_data.matmul(beta_sample), sig_sample).log_prob(
+                        self.y_data
+                    )
+                ).mean(0)
+            )  # check?
+
+            elbo.append(temp_elbo)
+
+        elbo = torch.stack(elbo).mean(0)
+        max_likelihood = torch.stack(max_likelihood).max()
+        var = torch.div(torch.stack(var).mean(0), 2 * max_likelihood)
+        print(var)
+        return elbo - var
 
     def optimise(self):
         optimizer = torch.optim.Adam(
@@ -68,7 +144,7 @@ class BayesianLinearRegression:
                 self.variational_distributions[key].var_params
                 for key in self.variational_distributions
             ],
-            lr=0.1,
+            lr=0.11,
         )
         elbo_hist = []
 
@@ -86,7 +162,7 @@ class BayesianLinearRegression:
             idx = np.random.choice(
                 self.n, minibatch_size, replace=sample_with_replacement
             )
-            loss = -self.elbo() / self.n
+            loss = -self.elbo_variance() / self.n
             elbo_hist.append(-loss.item())
             optimizer.zero_grad()
             loss.backward()
@@ -124,8 +200,6 @@ class BayesianLinearRegression:
 
 
 if __name__ == "__main__":
-    # Generate data
-    # set random number generator seeds for reproducibility
     torch.manual_seed(1)
     np.random.seed(0)
     N = 1000
@@ -135,5 +209,5 @@ if __name__ == "__main__":
     sig = 0.5
     y = Normal(x.matmul(beta), sig).rsample()
 
-    blr_class = BayesianLinearRegression(x_data=x, y_data=y)
+    blr_class = BayesianLinearRegression(x_data=x, y_data=y, theta_samples=10)
     blr_class.optimise()
