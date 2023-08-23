@@ -24,4 +24,4 @@ class VariationalNormal:
         return self.dist().rsample(n)
 
     def log_q(self, x):
-        return self.dist().log_prob(x).sum()
+        return self.dist().log_prob(x).mean(0).sum()
