@@ -25,60 +25,69 @@ class BayesianLinearRegression:
         self.theta_samples = torch.Size([theta_samples])
 
     def log_prior(self, variational_samples):
-        log_prior_beta = Normal(0, 1).log_prob(variational_samples["beta"]).sum()
-        log_prior_log_sigma = Normal(0, 1).log_prob(variational_samples["sig"]).sum()
+        log_prior_beta = 0
+        log_prior_log_sigma = 0
+        for beta_sample, sig_sample in variational_samples:
+            log_prior_beta += Normal(0, 1).log_prob(beta_sample).sum()
+            log_prior_log_sigma += Normal(0, 1).log_prob(sig_sample).sum()
 
-        return log_prior_beta + log_prior_log_sigma
+        return (log_prior_beta + log_prior_log_sigma) / self.theta_samples[0]
 
-    def loglike(self, variational_samples):
-        beta = variational_samples["beta"]
-        sig = variational_samples["sig"]
-        return Normal(self.x_data.matmul(beta), sig).log_prob(self.y_data).sum()
+    def log_likelihood(self, variational_samples):
+        loglik = []
+        for beta_sample, sig_sample in variational_samples:
+            loglik.append(
+                torch.reshape(
+                    Normal(self.x_data.matmul(beta_sample), sig_sample).log_prob(
+                        self.y_data
+                    ),
+                    (-1, 1),
+                )
+            )
+        return torch.cat(loglik, -1)
 
     def log_q(self, variational_samples):
-        # out = 0.0
-        # for key in self.variational_distributions:
-        #     out += self.variational_distributions[key].log_q(variational_samples[key])
-        log_q_beta = self.variational_distributions["beta"].log_q(
-            variational_samples["beta"]
-        )
-        log_q_sigma = self.variational_distributions["sig"].log_q(
-            variational_samples["sig"]
-        )
-        return log_q_beta + log_q_sigma
+        log_q_beta = 0
+        log_q_sigma = 0
+
+        for beta_sample, sig_sample in variational_samples:
+            log_q_beta += self.variational_distributions["beta"].log_q(beta_sample)
+            log_q_sigma += self.variational_distributions["sig"].log_q(sig_sample)
+
+        return (log_q_beta + log_q_sigma) / self.theta_samples[0]
+
+    def likelihood(self, variational_samples):
+        likelihood = []
+        for beta_sample, sig_sample in variational_samples:
+            likelihood.append(
+                torch.reshape(
+                    torch.exp(
+                        Normal(self.x_data.matmul(beta_sample), sig_sample).log_prob(
+                            self.y_data
+                        )
+                    ),
+                    (-1, 1),
+                )
+            )
+
+        return torch.cat(likelihood, -1)
 
     def elbo(self):
-        variational_samples = {}
-        # for key in self.variational_distributions:
-        #     variational_samples[key] = self.variational_distributions[key].rsample(self.theta_samples)
-
         beta_samples = self.variational_distributions["beta"].rsample(
             self.theta_samples
         )
         sig_samples = (
             self.variational_distributions["sig"].rsample(self.theta_samples).exp()
         )
-        elbo = []
+        variational_samples = list(zip(beta_samples, sig_samples))
 
-        for beta_sample, sig_sample in zip(beta_samples, sig_samples):
-            variational_samples = {
-                "beta": beta_sample,
-                "sig": sig_sample,
-            }
+        log_likelihood = self.log_likelihood(variational_samples).mean()
+        log_prior = self.log_prior(variational_samples)
+        log_posterior = self.log_q(variational_samples)
 
-            temp_elbo = self.loglike(variational_samples)
-            temp_elbo += self.log_prior(variational_samples)
-            temp_elbo -= self.log_q(variational_samples)
+        elbo = log_likelihood - log_posterior / self.n + log_prior / self.n
 
-            import pdb
-
-            pdb.set_trace()
-
-            temp_elbo = temp_elbo / self.n
-
-            elbo.append(temp_elbo)
-
-        return torch.stack(elbo).mean(0)
+        return elbo
 
     def elbo_variance(self):
         beta_samples = self.variational_distributions["beta"].rsample(
@@ -87,56 +96,22 @@ class BayesianLinearRegression:
         sig_samples = (
             self.variational_distributions["sig"].rsample(self.theta_samples).exp()
         )
-        elbo = []
-        max_likelihood = []
-        var = []
+        variational_samples = list(zip(beta_samples, sig_samples))
 
-        for beta_sample, sig_sample in zip(beta_samples, sig_samples):
-            variational_samples = {
-                "beta": beta_sample,
-                "sig": sig_sample,
-            }
+        log_likelihood = self.log_likelihood(variational_samples).mean()
+        log_prior = self.log_prior(variational_samples)
+        log_posterior = self.log_q(variational_samples)
 
-            temp_elbo = self.loglike(variational_samples)
-            temp_elbo += self.log_prior(variational_samples)
-            temp_elbo -= self.log_q(variational_samples)
+        elbo = log_likelihood - log_posterior / self.n + log_prior / self.n
 
-            temp_elbo = temp_elbo / self.n
-            var.append(
-                (
-                    (
-                        torch.exp(
-                            Normal(
-                                self.x_data.matmul(beta_sample), sig_sample
-                            ).log_prob(self.y_data)
-                        )
-                        - self.y_data
-                    )
-                    ** 2
-                ).mean(0)
-            )
-            print(
-                torch.exp(
-                    Normal(self.x_data.matmul(beta_sample), sig_sample).log_prob(
-                        self.y_data
-                    )
-                ).mean(0)
-            )
-            max_likelihood.append(
-                torch.exp(
-                    Normal(self.x_data.matmul(beta_sample), sig_sample).log_prob(
-                        self.y_data
-                    )
-                ).mean(0)
-            )  # check?
+        likelihood = self.likelihood(variational_samples)
 
-            elbo.append(temp_elbo)
+        diff_2 = ((likelihood - likelihood.mean(1).reshape(-1, 1)) ** 2).mean(1)
+        max_denom = 2 * (likelihood**2).max(1).values
 
-        elbo = torch.stack(elbo).mean(0)
-        max_likelihood = torch.stack(max_likelihood).max()
-        var = torch.div(torch.stack(var).mean(0), 2 * max_likelihood)
-        print(var)
-        return elbo - var
+        var_component = (diff_2 / max_denom).mean()
+
+        return elbo + var_component
 
     def optimise(self):
         optimizer = torch.optim.Adam(
