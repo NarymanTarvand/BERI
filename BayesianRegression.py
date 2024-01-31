@@ -12,7 +12,7 @@ torch.set_default_dtype(torch.float64)
 
 
 class BayesianLinearRegression:
-    def __init__(self, x_train, y_train, x_test, y_test, theta_samples, loss) -> None:
+    def __init__(self, x_train, y_train, x_test, y_test, num_var_samples, loss) -> None:
         self.x_train = x_train
         self.y_train = y_train
         self.x_test = x_test
@@ -21,27 +21,25 @@ class BayesianLinearRegression:
         self.n = self.x_train.size(0)
         self.m = self.x_train.size(1)
 
-        self.variational_distribution = VariationalMultivariateNormal(size=self.m)
-        self.theta_samples = torch.Size([theta_samples])
+        self.variational_distribution = VariationalMultivariateNormal(dim=self.m)
+        self.num_var_samples = num_var_samples
         self.loss = loss
 
     def log_prior(self, variational_samples):
+        # code checked
+        # TODO: theory check
         log_prior = 0
         for theta_sample in variational_samples:
             log_prior += Normal(0, 1).log_prob(theta_sample).sum()
-
-        return log_prior / self.theta_samples[0]
+        return log_prior / self.num_var_samples
 
     def log_likelihood(self, variational_samples):
+        # code checked
+        # TODO: theory check
         loglik = []
         for theta_sample in variational_samples:
             loglik.append(
-                torch.reshape(
-                    Normal(
-                        self.x_train.matmul(torch.transpose(theta_sample, 0, 1)), 1
-                    ).log_prob(self.y_train),
-                    (-1, 1),
-                )
+                Normal(theta_sample @ self.x_train.t(), 1).log_prob(self.y_train)
             )
         return torch.cat(loglik, -1)
 
@@ -51,7 +49,7 @@ class BayesianLinearRegression:
         for theta_sample in variational_samples:
             log_q_theta += self.variational_distribution.log_q(theta_sample)
 
-        return log_q_theta / self.theta_samples[0]
+        return log_q_theta / self.num_var_samples
 
     def likelihood(self, variational_samples):
         likelihood = []
@@ -85,7 +83,10 @@ class BayesianLinearRegression:
         return torch.cat(likelihood, -1).mean()
 
     def elbo(self):
-        variational_samples = self.variational_distribution.rsample(self.theta_samples)
+        variational_samples = self.variational_distribution.rsample(
+            self.num_var_samples
+        )
+
         log_likelihood = self.log_likelihood(variational_samples).mean()
         log_prior = self.log_prior(variational_samples)
         log_posterior = self.log_q(variational_samples)
@@ -95,7 +96,9 @@ class BayesianLinearRegression:
         return elbo
 
     def elbo_variance(self):
-        variational_samples = self.variational_distribution.rsample(self.theta_samples)
+        variational_samples = self.variational_distribution.rsample(
+            self.num_var_samples
+        )
 
         log_likelihood = self.log_likelihood(variational_samples).mean()
         log_prior = self.log_prior(variational_samples)
@@ -113,9 +116,9 @@ class BayesianLinearRegression:
         return elbo - var_component
 
     def optimise(self):
-        optimizer = torch.optim.Adam(
-            [self.variational_distribution.var_params],
-            lr=0.11,
+        optimiser = torch.optim.Adam(
+            self.variational_distribution.var_params(),
+            lr=0.05,
         )
         elbo_hist = []
 
@@ -138,28 +141,29 @@ class BayesianLinearRegression:
             else:
                 loss = -self.elbo_variance()
             elbo_hist.append(-loss.item())
-            optimizer.zero_grad()
+            optimiser.zero_grad()
             loss.backward()
-            optimizer.step()
+            optimiser.step()
+            self.variational_distribution.project()
 
             # Print progress bar
             iters.set_description("ELBO: {}".format(elbo_hist[-1]), refresh=False)
         # print('True theta: {}'.format(theta.detach().numpy()))
         print(
             "theta mean: {}".format(
-                self.variational_distribution.var_params[:1].detach().numpy()
+                self.variational_distribution.var_params()[0].detach().numpy()
             )
         )
         print(
             "theta sd: {}".format(
-                self.variational_distribution.var_params[1:].detach().numpy()
+                self.variational_distribution.var_params()[1].detach().numpy()
             )
         )
 
-        variational_samples = self.variational_distribution.rsample(self.theta_samples)
-        print(
-            f"Negative Log-Likelihood: {self.neg_log_likelihood(variational_samples)}"
-        )
+        # variational_samples = self.variational_distribution.rsample(self.N_var_samples)
+        # print(
+        #     f"Negative Log-Likelihood: {self.neg_log_likelihood(variational_samples)}"
+        # )
         # return elbo_hist
 
 
@@ -177,7 +181,7 @@ if __name__ == "__main__":
         y_train=y_train,
         x_test=x_test,
         y_test=y_test,
-        theta_samples=10,
+        num_var_samples=10,
         loss="ELBO",
     )
     blr_class.optimise()

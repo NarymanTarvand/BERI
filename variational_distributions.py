@@ -28,22 +28,47 @@ class VariationalNormal:
 
 # Multivariate Normal Variational Distribution, with dependent components
 class VariationalMultivariateNormal:
-    def __init__(self, size):
-        self.size = size
-
-        mean = torch.zeros(1, size)
-        cov_matrix = torch.eye(size)
-        self.var_params = torch.cat([mean, cov_matrix])
-        self.var_params.requires_grad = True
+    def __init__(self, dim):
+        self.dim = dim
+        self.mean = torch.zeros(self.dim).requires_grad_()
+        self.M = torch.eye(self.dim).requires_grad_()
 
     def dist(self):
-        return MultivariateNormal(self.var_params[:1], scale_tril=self.var_params[1:])
+        return MultivariateNormal(self.mean, scale_tril=torch.tril(self.M))
 
     def rsample(self, n=torch.Size([])):
-        return self.dist().rsample(n)
+        return self.dist().rsample([n])
 
     def log_q(self, x):
         return self.dist().log_prob(x).mean(0).sum()
+
+    def covariance(self):
+        M_aux = torch.tril(self.M).detach()
+        return M_aux @ M_aux.t()
+
+    def var_params(self):
+        return [self.mean, self.M]
+
+    def project(self):
+        # Diagonal elements project to be positive
+        eps = 1e-6
+        M = self.M.detach().clone()
+        for i in range(M.shape[1]):
+            if M[i, i] <= 0:
+                M[i, i] = eps
+        self.M = M.requires_grad_()
+
+    def _get_params(self):
+        mean = self.mean.detach().clone().requires_grad_()
+        M = self.M.detach().clone().requires_grad_()
+        return [mean, torch.tril(M)]
+
+    def _transform_params(self, params):
+        mean = params[0]
+        M = params[1]
+        M_aux = torch.tril(M)
+        # return mean, tt.tril(M)
+        return mean, M_aux @ M_aux.t()  # Again, covariance
 
 
 # Normal Variational Distribution, with independent components used in bayesian NN
