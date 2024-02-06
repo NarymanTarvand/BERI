@@ -3,7 +3,7 @@ from torch.distributions import Normal, Gamma, Binomial
 from random_data_generator import masegosa_sampleData, univariate_normal_data_generator
 from variational_distributions import VariationalMultivariateNormal, VariationalNormal
 import torch
-from torch.distributions import Normal, Gamma
+from torch.distributions import Normal, Gamma, MultivariateNormal
 
 import numpy as np
 from tqdm import trange
@@ -26,30 +26,24 @@ class BayesianLinearRegression:
         self.loss = loss
 
     def log_prior(self, variational_samples):
-        # code checked
-        # TODO: theory check
-        log_prior = 0
-        for theta_sample in variational_samples:
-            log_prior += Normal(0, 1).log_prob(theta_sample).sum()
-        return log_prior / self.num_var_samples
+        return (
+            MultivariateNormal(torch.zeros(self.m), scale_tril=torch.eye(self.m))
+            .log_prob(variational_samples)
+            .mean()
+        )
 
     def log_likelihood(self, variational_samples):
-        # code checked
-        # TODO: theory check
-        loglik = []
-        for theta_sample in variational_samples:
-            loglik.append(
-                Normal(theta_sample @ self.x_train.t(), 1).log_prob(self.y_train)
-            )
-        return torch.cat(loglik, -1)
+        # return -(
+        #     Normal(variational_samples @ self.x_train.t(), 1)
+        #     .log_prob(self.y_train)
+        #     .mean()
+        # )
+        dist = Normal(variational_samples @ self.x_train.t(), 1)
+        sample = dist.sample()
+        return -dist.log_prob(sample).mean()
 
     def log_q(self, variational_samples):
-        log_q_theta = 0
-
-        for theta_sample in variational_samples:
-            log_q_theta += self.variational_distribution.log_q(theta_sample)
-
-        return log_q_theta / self.num_var_samples
+        return self.variational_distribution.log_q(variational_samples)
 
     def likelihood(self, variational_samples):
         likelihood = []
@@ -67,20 +61,26 @@ class BayesianLinearRegression:
 
         return torch.cat(likelihood, -1)
 
-    def neg_log_likelihood(self, variational_samples):
-        likelihood = []
-        for theta_sample in variational_samples:
-            likelihood.append(
-                torch.reshape(
-                    Normal(self.x_test.matmul(theta_sample), 1).log_prob(self.y_test),
-                    (-1, 1),
-                )
-            )
+    # def neg_log_likelihood(self, variational_samples):
+    #     likelihood = []
+    #     for theta_sample in variational_samples:
+    #         likelihood.append(
+    #             torch.reshape(
+    #                 Normal(self.x_test.matmul(theta_sample), 1).log_prob(self.y_test),
+    #                 (-1, 1),
+    #             )
+    #         )
 
-        likelihood = torch.cat(likelihood, -1)
-        # TODO: CE over the test set - equation (1) in masegosa
-        # TODO: replace with: torch.sum(torch.logsumexp(likelihood, -1) - torch.log(torch.tensor(10)))
-        return torch.cat(likelihood, -1).mean()
+    #     likelihood = torch.cat(likelihood, -1)
+    #     # TODO: CE over the test set - equation (1) in masegosa
+    #     # TODO: replace with: torch.sum(torch.logsumexp(likelihood, -1) - torch.log(torch.tensor(10)))
+    #     return torch.cat(likelihood, -1).mean()
+    def test_log_likelihood(self, variational_samples):
+        return -(
+            Normal(variational_samples @ self.x_test.t(), 1)
+            .log_prob(self.y_test)
+            .mean()
+        )
 
     def elbo(self):
         variational_samples = self.variational_distribution.rsample(
@@ -88,10 +88,10 @@ class BayesianLinearRegression:
         )
 
         log_likelihood = self.log_likelihood(variational_samples).mean()
-        log_prior = self.log_prior(variational_samples)
         log_posterior = self.log_q(variational_samples)
+        log_prior = self.log_prior(variational_samples)
 
-        elbo = log_likelihood + log_posterior / self.n - log_prior / self.n
+        elbo = -log_likelihood + log_posterior / self.n - log_prior / self.n
 
         return elbo
 
@@ -160,10 +160,10 @@ class BayesianLinearRegression:
             )
         )
 
-        # variational_samples = self.variational_distribution.rsample(self.N_var_samples)
-        # print(
-        #     f"Negative Log-Likelihood: {self.neg_log_likelihood(variational_samples)}"
-        # )
+        variational_samples = self.variational_distribution.rsample(
+            self.num_var_samples
+        )
+        print(f"Test Log-Likelihood: {self.test_log_likelihood(variational_samples)}")
         # return elbo_hist
 
 
@@ -174,14 +174,14 @@ if __name__ == "__main__":
 
     torch.manual_seed(1)
     np.random.seed(0)
-    x_train, y_train = univariate_normal_data_generator(1000)
+    x_train, y_train = univariate_normal_data_generator(10000)
 
     blr_class = BayesianLinearRegression(
         x_train=x_train,
         y_train=y_train,
         x_test=x_test,
         y_test=y_test,
-        num_var_samples=10,
+        num_var_samples=100,
         loss="ELBO",
     )
     blr_class.optimise()

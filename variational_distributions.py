@@ -34,13 +34,15 @@ class VariationalMultivariateNormal:
         self.M = torch.eye(self.dim).requires_grad_()
 
     def dist(self):
-        return MultivariateNormal(self.mean, scale_tril=torch.tril(self.M))
+        return MultivariateNormal(
+            self.mean, scale_tril=torch.tril(self.M), validate_args=True
+        )
 
     def rsample(self, n=torch.Size([])):
         return self.dist().rsample([n])
 
     def log_q(self, x):
-        return self.dist().log_prob(x).mean(0).sum()
+        return self.dist().log_prob(x).mean()
 
     def covariance(self):
         M_aux = torch.tril(self.M).detach()
