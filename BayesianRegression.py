@@ -32,15 +32,12 @@ class BayesianLinearRegression:
             .mean()
         )
 
-    def log_likelihood(self, variational_samples):
-        # return -(
-        #     Normal(variational_samples @ self.x_train.t(), 1)
-        #     .log_prob(self.y_train)
-        #     .mean()
-        # )
-        dist = Normal(variational_samples @ self.x_train.t(), 1)
-        sample = dist.sample()
-        return -dist.log_prob(sample).mean()
+    def log_loss(self, variational_samples):
+        return -(
+            Normal(variational_samples @ self.x_train.t(), 1)
+            .log_prob(self.y_train)
+            .mean()
+        )
 
     def log_q(self, variational_samples):
         return self.variational_distribution.log_q(variational_samples)
@@ -82,25 +79,25 @@ class BayesianLinearRegression:
             .mean()
         )
 
-    def elbo(self):
+    def pac_bayes_bound(self):
         variational_samples = self.variational_distribution.rsample(
             self.num_var_samples
         )
 
-        log_likelihood = self.log_likelihood(variational_samples).mean()
+        log_loss = self.log_loss(variational_samples)
         log_posterior = self.log_q(variational_samples)
         log_prior = self.log_prior(variational_samples)
 
-        elbo = -log_likelihood + log_posterior / self.n - log_prior / self.n
+        pac_bayes_bound = log_loss + log_posterior / self.n - log_prior / self.n
 
-        return elbo
+        return pac_bayes_bound
 
     def elbo_variance(self):
         variational_samples = self.variational_distribution.rsample(
             self.num_var_samples
         )
 
-        log_likelihood = self.log_likelihood(variational_samples).mean()
+        log_likelihood = self.log_loss(variational_samples).mean()
         log_prior = self.log_prior(variational_samples)
         log_posterior = self.log_q(variational_samples)
 
@@ -118,7 +115,7 @@ class BayesianLinearRegression:
     def optimise(self):
         optimiser = torch.optim.Adam(
             self.variational_distribution.var_params(),
-            lr=0.05,
+            lr=0.005,
         )
         elbo_hist = []
 
@@ -136,18 +133,20 @@ class BayesianLinearRegression:
             idx = np.random.choice(
                 self.n, minibatch_size, replace=sample_with_replacement
             )
-            if self.loss == "ELBO":
-                loss = -self.elbo()
+            if self.loss == "PAC BAYES":
+                loss = self.pac_bayes_bound()
             else:
                 loss = -self.elbo_variance()
-            elbo_hist.append(-loss.item())
+            elbo_hist.append(loss.item())
             optimiser.zero_grad()
             loss.backward()
             optimiser.step()
             self.variational_distribution.project()
 
             # Print progress bar
-            iters.set_description("ELBO: {}".format(elbo_hist[-1]), refresh=False)
+            iters.set_description(
+                "PAC Bayes Bound: {}".format(elbo_hist[-1]), refresh=False
+            )
         # print('True theta: {}'.format(theta.detach().numpy()))
         print(
             "theta mean: {}".format(
@@ -182,7 +181,7 @@ if __name__ == "__main__":
         x_test=x_test,
         y_test=y_test,
         num_var_samples=100,
-        loss="ELBO",
+        loss="PAC BAYES",
     )
     blr_class.optimise()
 
