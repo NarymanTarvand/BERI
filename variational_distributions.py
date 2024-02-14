@@ -54,11 +54,11 @@ class VariationalMultivariateNormal:
     def project(self):
         # Diagonal elements project to be positive
         eps = 1e-6
-        M = self.M.detach().clone()
-        for i in range(M.shape[1]):
-            if M[i, i] <= 0:
-                M[i, i] = eps
-        self.M = M.requires_grad_()
+        # M = self.M.detach().clone()
+        for i in range(self.M.shape[1]):
+            if self.M[i, i] <= 0:
+                self.M[i, i] = eps
+        # self.M = M.requires_grad_()
 
     def _get_params(self):
         mean = self.mean.detach().clone().requires_grad_()

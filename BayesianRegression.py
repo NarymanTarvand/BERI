@@ -43,40 +43,10 @@ class BayesianLinearRegression:
         return self.variational_distribution.log_q(variational_samples)
 
     def likelihood(self, variational_samples):
-        likelihood = []
-        for theta_sample in variational_samples:
-            likelihood.append(
-                torch.reshape(
-                    torch.exp(
-                        Normal(self.x_train.matmul(theta_sample), 1).log_prob(
-                            self.y_train
-                        )
-                    ),
-                    (-1, 1),
-                )
-            )
-
-        return torch.cat(likelihood, -1)
-
-    # def neg_log_likelihood(self, variational_samples):
-    #     likelihood = []
-    #     for theta_sample in variational_samples:
-    #         likelihood.append(
-    #             torch.reshape(
-    #                 Normal(self.x_test.matmul(theta_sample), 1).log_prob(self.y_test),
-    #                 (-1, 1),
-    #             )
-    #         )
-
-    #     likelihood = torch.cat(likelihood, -1)
-    #     # TODO: CE over the test set - equation (1) in masegosa
-    #     # TODO: replace with: torch.sum(torch.logsumexp(likelihood, -1) - torch.log(torch.tensor(10)))
-    #     return torch.cat(likelihood, -1).mean()
-    def test_log_likelihood(self, variational_samples):
-        return -(
-            Normal(variational_samples @ self.x_test.t(), 1)
-            .log_prob(self.y_test)
-            .mean()
+        return (
+            Normal(variational_samples @ self.x_train.t(), 1)
+            .log_prob(self.y_train)
+            .exp()
         )
 
     def pac_bayes_bound(self):
@@ -92,7 +62,7 @@ class BayesianLinearRegression:
 
         return pac_bayes_bound
 
-    def elbo_variance(self):
+    def PAC2_variational_bound(self):
         variational_samples = self.variational_distribution.rsample(
             self.num_var_samples
         )
@@ -111,6 +81,13 @@ class BayesianLinearRegression:
         var_component = torch.nan_to_num(diff_2 / max_denom).mean()
 
         return elbo - var_component
+
+    def negative_test_log_likelihood(self, variational_samples):
+        return -(
+            Normal(variational_samples @ self.x_test.t(), 1)
+            .log_prob(self.y_test)
+            .mean()
+        )
 
     def optimise(self):
         optimiser = torch.optim.Adam(
@@ -136,44 +113,38 @@ class BayesianLinearRegression:
             if self.loss == "PAC BAYES":
                 loss = self.pac_bayes_bound()
             else:
-                loss = -self.elbo_variance()
+                loss = -self.PAC2_variational_bound()
             elbo_hist.append(loss.item())
             optimiser.zero_grad()
             loss.backward()
             optimiser.step()
-            self.variational_distribution.project()
 
             # Print progress bar
             iters.set_description(
                 "PAC Bayes Bound: {}".format(elbo_hist[-1]), refresh=False
             )
-        # print('True theta: {}'.format(theta.detach().numpy()))
         print(
-            "theta mean: {}".format(
-                self.variational_distribution.var_params()[0].detach().numpy()
-            )
+            "theta mean: {}".format(self.variational_distribution.mean.detach().numpy())
         )
-        print(
-            "theta sd: {}".format(
-                self.variational_distribution.var_params()[1].detach().numpy()
-            )
-        )
+
+        M_aux = torch.tril(self.variational_distribution.M).detach()
+        print("theta sd: {}".format(M_aux @ M_aux.t()))
 
         variational_samples = self.variational_distribution.rsample(
             self.num_var_samples
         )
-        print(f"Test Log-Likelihood: {self.test_log_likelihood(variational_samples)}")
+        print(
+            f"Test Log-Likelihood: {self.negative_test_log_likelihood(variational_samples)}"
+        )
         # return elbo_hist
 
 
 if __name__ == "__main__":
-    torch.manual_seed(2)
-    np.random.seed(1)
-    x_test, y_test = univariate_normal_data_generator(100)
-
-    torch.manual_seed(1)
+    torch.manual_seed(0)
     np.random.seed(0)
-    x_train, y_train = univariate_normal_data_generator(10000)
+    x_train, y_train = masegosa_sampleData(100, 5)
+
+    x_test, y_test = masegosa_sampleData(10000, 5)
 
     blr_class = BayesianLinearRegression(
         x_train=x_train,
@@ -181,7 +152,7 @@ if __name__ == "__main__":
         x_test=x_test,
         y_test=y_test,
         num_var_samples=100,
-        loss="PAC BAYES",
+        loss="PAC2 BAYES",
     )
     blr_class.optimise()
 
