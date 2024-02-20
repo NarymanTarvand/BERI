@@ -25,6 +25,9 @@ class BayesianLinearRegression:
         self.num_var_samples = num_var_samples
         self.loss = loss
 
+    def log_prob(self, variational_samples):
+        return Normal(variational_samples @ self.x_train.t(), 1).log_prob(self.y_train)
+
     def log_prior(self, variational_samples):
         return (
             MultivariateNormal(torch.zeros(self.m), scale_tril=torch.eye(self.m))
@@ -33,21 +36,25 @@ class BayesianLinearRegression:
         )
 
     def log_loss(self, variational_samples):
-        return -(
-            Normal(variational_samples @ self.x_train.t(), 1)
-            .log_prob(self.y_train)
-            .mean()
-        )
+        return -self.log_prob(variational_samples).mean()
 
     def log_q(self, variational_samples):
         return self.variational_distribution.log_q(variational_samples)
 
     def likelihood(self, variational_samples):
-        return (
-            Normal(variational_samples @ self.x_train.t(), 1)
-            .log_prob(self.y_train)
-            .exp()
+        return self.log_prob(variational_samples).exp()
+
+    def variance(self, variational_samples, variational_samples_prime):
+        log_prob = self.log_prob(variational_samples)
+        log_prob_prime = self.log_prob(variational_samples_prime)
+
+        max_ = torch.maximum(log_prob, log_prob_prime) + 0.01
+
+        var_ = torch.exp(2 * log_prob - 2 * max_) - torch.exp(
+            log_prob + log_prob_prime - 2 * max_
         )
+
+        return var_.mean()
 
     def pac_bayes_bound(self):
         variational_samples = self.variational_distribution.rsample(
@@ -66,21 +73,20 @@ class BayesianLinearRegression:
         variational_samples = self.variational_distribution.rsample(
             self.num_var_samples
         )
+        variational_samples_prime = self.variational_distribution.rsample(
+            self.num_var_samples
+        )
 
-        log_likelihood = self.log_loss(variational_samples).mean()
+        log_loss = self.log_loss(variational_samples)
+        variational_var = self.variance(variational_samples, variational_samples_prime)
         log_prior = self.log_prior(variational_samples)
         log_posterior = self.log_q(variational_samples)
 
-        elbo = log_likelihood + log_posterior / self.n - log_prior / self.n
+        pac_variational_bound = (
+            log_loss - variational_var + log_posterior / self.n - log_prior / self.n
+        )
 
-        likelihood = self.likelihood(variational_samples)
-
-        diff_2 = ((likelihood - likelihood.mean(1).reshape(-1, 1)) ** 2).mean(1)
-        max_denom = 2 * (likelihood**2).max(1).values
-
-        var_component = torch.nan_to_num(diff_2 / max_denom).mean()
-
-        return elbo - var_component
+        return pac_variational_bound
 
     def negative_test_log_likelihood(self, variational_samples):
         return -(
@@ -113,7 +119,7 @@ class BayesianLinearRegression:
             if self.loss == "PAC BAYES":
                 loss = self.pac_bayes_bound()
             else:
-                loss = -self.PAC2_variational_bound()
+                loss = self.PAC2_variational_bound()
             elbo_hist.append(loss.item())
             optimiser.zero_grad()
             loss.backward()
